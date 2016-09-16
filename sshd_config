@@ -1,0 +1,13 @@
+Subsystem sftp internal-sftp
+
+Match group sftponly
+	ChrootDirectory /data/keys/chroots/%u
+	AuthorizedKeysCommand /data/keys/create_authorized_keys.sh
+	AuthorizedKeysCommandUser rootuser
+
+	X11Forwarding no
+	AllowTcpForwarding no
+	ForceCommand internal-sftp
+
+	PasswordAuthentication no
+	PubkeyAuthentication yes
