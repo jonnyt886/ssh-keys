@@ -90,15 +90,14 @@ list_authorized_keys() {
 	[ -d $keydir ] || return # don't die; no dir simply means no authorized keys
 
 	local keyhosts=`get $user keys_are_hostnames 1`
-	if [ $keyhosts -eq 1 ]; then
+	if [ $keyhosts == "1" ]; then
 		find $keydir -type f | while read f; do
 			local keyhost=`basename $f`
-			local fromstr=""
 
 			if [ $keyhost != "any" ]; then
 				local fq_only=`get $user fully_qualified_hosts_only 0`
 				# https://stackoverflow.com/a/20460402
-				if [ $fq_only -eq 1 ] && [ -n "${keyhost##*.*}" ]; then
+				if [ $fq_only == "1" ] && [ -n "${keyhost##*.*}" ]; then
 					# user wants FQ hostnames only but our hostname
 					# doesn't contain a '.'; so ignore it
 					continue
@@ -109,13 +108,11 @@ list_authorized_keys() {
 				[ $? -ne 0 ] && contine
 				set -e
 
-				echo $lookup | grep STREAM | awk '{print $1 " " $3}' | while read a; do
-					fromstr="$fromstr,$a"
-				done
+				local fromstr=`echo $lookup | grep STREAM | awk '{print $1 "," $3}'`
 
 				# if there are from addresses, then print them out before
 				# catting the key
-				[ -n "$fromstr" ] && printf 'from="%s" ' "$fromstr"
+				[ -n "$fromstr" ] && printf 'from="%s" ' "$keyhost,$fromstr"
 
 				cat $f
 			fi
