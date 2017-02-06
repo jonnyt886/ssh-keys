@@ -1,0 +1,221 @@
+#!/bin/sh
+
+USAGE="`basename $0` [-c inifile] <cmd> [<args>]"
+read -r -d '' HELP <<'END'
+ssh-keys - manage SSH keys with ease
+
+where <cmd> can be:
+  list-authorized-keys <user>
+    List the keys that are valid for <user>.
+    consideration on this connection. This is
+    configured through key-related settings in
+    the ini file.
+    This command is intended for internal use,
+    though it is also useful for debugging issues
+    with keys. It is called by sshd when a host
+    connects to determine which keys to attempt
+    authentication against.
+
+  mount-chroot-subdirs <user>
+    Mount the configured chroot-subdirs for the
+    given user, under their configured chroot-dir.
+    The chroot-dir and chroot-subdirs are created
+    (if they already exist an error is raised;
+    this may mean they are already mounted).
+    The ownership and mode of the chroot-dir is
+    set to <user> and 0700.
+    This command is intended for internal use only;
+    it is called by sshd when a user logs in.
+
+  unmount-chroot-subdirs <user>
+    Opposite of mount-chroot-subdirs; this will
+    unmount all subdirs in the given user's
+    chroot-dir, and delete the mountpoints and the
+    user's chroot-dir afterward.
+    This command is intended for internal use only;
+    it is called by sshd when a user logs in.
+END
+
+set -eu
+
+inifile=/etc/ssh/ssh-keys.ini
+
+die() {
+	echo $@ >&2
+	exit 1	
+}
+
+die_cmd() {
+	echo "usage: `basename $0`" $@ >&2
+	exit 1	
+}
+
+# get INI section value
+# usage: get <sectionname> <valuename> [<default val>]
+get() {
+	[ $# -ge 2 ] || die "usage: get <sect> <var> [<default>]"
+	[ $# -eq 3 ] && {
+		local DEFAULT_RET=${3:-""}
+		eval echo "\${INI__${1}__${2}:-${DEFAULT_RET}}"
+	} || {
+		eval echo "\${INI__${1}__${2}:?get ${1} ${2} failed}"
+	}
+}
+
+# get the name of all vars defined in the given section.
+# if <prefix> is used, only vars whose names begin with
+# the prefix are outputted
+# usage: get_section_vars <sectionname> [<prefix>]
+get_section_vars() {
+	[ $# -ge 1 ] || die "usage: g_s_v <sectname> [<prefix>]"
+	local sect=$1
+
+	local prefix=""
+	[ $# -eq 2 ] && prefix="$2"
+
+	echo ${INI__ALL_VARS}|tr ' ' '\n' | while read v; do
+		[ -z ${v##INI__${sect}__${prefix}*} ] && echo ${v##INI__${sect}__}
+	done
+
+}
+
+# print authorized keys on stdout for connections as <user>
+# usage: l_a_k <host> <user>
+list_authorized_keys() {
+	[ $# -eq 1 ] || die "usage: l_a_k <user>"
+	local user=$1
+	local keydir=`get $user key_dir /etc/ssh/keys/%u |\
+		sed -e s:%u:$user:`
+
+	[ -d $keydir ] || return # don't die; no dir simply means no authorized keys
+
+	local keyhosts=`get $user keys_are_hostnames 1`
+	if [ $keyhosts -eq 1 ]; then
+		find $keydir -type f | while read f; do
+			local keyhost=`basename $f`
+			local fromstr=""
+
+			if [ $keyhost != "any" ]; then
+				local fq_only=`get $user fully_qualified_hosts_only 0`
+				# https://stackoverflow.com/a/20460402
+				if [ $fq_only -eq 1 ] && [ -n "${keyhost##*.*}" ]; then
+					# user wants FQ hostnames only but our hostname
+					# doesn't contain a '.'; so ignore it
+					continue
+				fi
+
+				set +e # lookup might fail
+				local lookup=`getent ahostsv4 $keyhost`
+				[ $? -ne 0 ] && contine
+				set -e
+
+				echo $lookup | grep STREAM | awk '{print $1 " " $3}' | while read a; do
+					fromstr="$fromstr,$a"
+				done
+
+				# if there are from addresses, then print them out before
+				# catting the key
+				[ -n "$fromstr" ] && printf 'from="%s" ' "$fromstr"
+
+				cat $f
+			fi
+		done
+
+	else
+		cat $keydir/*
+	fi
+}
+
+# usage: m_c_s <user>
+mount_chroot_subdirs() {
+	[ $# -eq 1 ] || die "usage: m_c_s <user>"
+	local user=$1
+	#[ `id -u` -eq 0 ] || die "must be run as root" # in order to perform mounting
+
+	local chroot_dir=`get $user chroot_dir | sed -e s:%u:$user:`
+
+	get_section_vars $user chroot_subdir | while read var; do
+		local subdir=`get $user $var`
+		local base=`basename $subdir`
+		local dest=$chroot_dir/$base
+
+		# check that dirs do not exist before doing anything!
+		# if they exist, they're probably already mounted
+		[ -d $subdir ] || die "configured chroot_subdir $subdir was not found"
+		[ ! -d $dest ] || die "configured chroot_subdir mountpoint $dest already exists! assuming it is mounted and bailing out..."
+		echo mkdir -p $dest
+		echo chown $user $dest
+		echo mount --bind $subdir $dest
+	done
+}
+
+# usage: u_c_s <user>
+umount_chroot_subdirs() {
+	[ $# -eq 1 ] || die "usage: u_c_s <user>"
+	local user=$1
+	#[ `id -u` -eq 0 ] || die "must be run as root" # in order to perform mounting
+
+	local chroot_dir=`get $user chroot_dir | sed -e s:%u:$user:`
+
+	[ -d $chroot_dir ] || die "chroot dir $chroot_dir does not exist; is anything mounted?"
+
+	find $chroot_dir -maxdepth 1 -type d | while read m; do
+		echo umount $m
+		echo rmdir $m
+	done
+}
+
+while [ $# -ge 1 ] && [ -n "$1" ] && [ ${1:0:1} == "-" ]; do
+case $1 in
+	-c)
+		shift
+		inifile="$1"
+		shift
+		;;
+	-h|--help)
+		echo "$HELP"
+		exit 0
+		;;
+
+	*)
+		die "$USAGE"
+		;;
+esac
+done
+
+[ $# -ge 1 ] || die $USAGE
+
+[ -f "$inifile" ] || die "fatal: cannot find $inifile"
+
+# find read_ini and run it
+READ_INI=`dirname $0`/read_ini.sh
+[ -f "$READ_INI" ] || die "fatal: cannot find read_ini"
+
+. "$READ_INI"
+set +eu
+read_ini -b 1 "$inifile"
+set -eu
+
+case $1 in
+	list-authorized-keys)
+		# usage: l-a-k <user>
+		[ $# -eq 2 ] || die_cmd "$1 <user>"
+		list_authorized_keys "$2"
+		;;
+
+	mount-chroot-subdirs)
+		# usage: m-c-s <user>
+		[ $# -eq 2 ] || die_cmd "$1 <user>"
+		mount_chroot_subdirs "$2"
+		;;
+
+	umount-chroot-subdirs)
+		# usage: u-c-s <user>
+		[ $# -eq 2 ] || die_cmd "$1 <user>"
+		umount_chroot_subdirs "$2"
+		;;
+
+	*)
+		die "unsupported command"
+		;;
+esac

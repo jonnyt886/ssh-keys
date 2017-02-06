@@ -1,9 +1,19 @@
+# The default is to check both .ssh/authorized_keys and .ssh/authorized_keys2
+# but this is overridden so installations will only check .ssh/authorized_keys
+AuthorizedKeysFile	.ssh/authorized_keys
+
+#AuthorizedPrincipalsFile none
+
+#AuthorizedKeysCommand none
+#AuthorizedKeysCommandUser nobody
+
 Subsystem sftp internal-sftp
+
+AuthorizedKeysCommand /data/keys/create_authorized_keys.sh
+AuthorizedKeysCommandUser nobody
 
 Match group sftponly
 	ChrootDirectory /data/keys/chroots/%u
-	AuthorizedKeysCommand /data/keys/create_authorized_keys.sh
-	AuthorizedKeysCommandUser rootuser
 
 	X11Forwarding no
 	AllowTcpForwarding no
